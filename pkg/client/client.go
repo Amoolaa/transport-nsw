@@ -58,7 +58,7 @@ func (c *Client[T]) Do(
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("apikey %s", os.Getenv("API_TOKEN")))
+	req.Header.Set("Authorization", fmt.Sprintf("apikey %s", os.Getenv("TRANSPORT_NSW_API_TOKEN")))
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

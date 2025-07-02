@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+	"transport-nsw-exporter/internal/config"
 	"transport-nsw-exporter/pkg/client"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,6 +16,7 @@ import (
 var (
 	namespace        = "transport"
 	carParkSubsystem = "car_park"
+	commonLabels     = []string{"facility_id", "facility_name", "suburb", "address"}
 )
 
 type Facility struct {
@@ -55,17 +57,19 @@ type Occupancy struct {
 }
 
 type CarParkCollector struct {
-	carParkInfo         *prometheus.Desc
-	carParkCurrentSpots *prometheus.Desc
-	carParkTotalSpots   *prometheus.Desc
-	carParkErrors       *prometheus.Desc
-	carParkLastUpdated  *prometheus.Desc
-	client              *client.Client[Facility]
-	logger              *slog.Logger
+	carParkInfo                *prometheus.Desc
+	carParkCurrentVehicleCount *prometheus.Desc
+	carParkTotalSpots          *prometheus.Desc
+	carParkErrors              *prometheus.Desc
+	carParkLastUpdated         *prometheus.Desc
+	client                     *client.Client[Facility]
+	logger                     *slog.Logger
+	cfg                        config.Carpark
 }
 
-func NewCarkParkCollector(logger *slog.Logger) *CarParkCollector {
+func NewCarkParkCollector(logger *slog.Logger, carparkCfg config.Carpark) *CarParkCollector {
 	return &CarParkCollector{
+		cfg:    carparkCfg,
 		logger: logger,
 		client: client.New[Facility](
 			http.Client{
@@ -74,32 +78,32 @@ func NewCarkParkCollector(logger *slog.Logger) *CarParkCollector {
 		),
 		carParkErrors: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, carParkSubsystem, "errors"),
-			"Car park scraper errors",
-			nil,
+			"Number of collector errors",
+			[]string{"facility_id"},
 			nil,
 		),
 		carParkInfo: prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, carParkSubsystem, "info"),
 			"Car park information",
-			[]string{"facility_id"},
+			commonLabels,
 			nil,
 		),
-		carParkCurrentSpots: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, carParkSubsystem, "current_spots"),
-			"Car park current spots",
-			[]string{"facility_id"},
+		carParkCurrentVehicleCount: prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, carParkSubsystem, "vehicle_count"),
+			"Car park current vehicle count",
+			commonLabels,
 			nil,
 		),
 		carParkTotalSpots: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, carParkSubsystem, "total_spots"),
+			prometheus.BuildFQName(namespace, carParkSubsystem, "spots_total"),
 			"Car park total spots",
-			[]string{"facility_id"},
+			commonLabels,
 			nil,
 		),
 		carParkLastUpdated: prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, carParkSubsystem, "last_updated_ts"),
+			prometheus.BuildFQName(namespace, carParkSubsystem, "last_updated_seconds"),
 			"Car park last updated timestamp",
-			[]string{"facility_id"},
+			commonLabels,
 			nil,
 		),
 	}
@@ -109,12 +113,12 @@ func (c *CarParkCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.carParkInfo
 }
 
-func (c *CarParkCollector) Collect(ch chan<- prometheus.Metric) {
+func (c *CarParkCollector) CollectFromID(ch chan<- prometheus.Metric, id string) {
 	params := url.Values{}
-	params.Add("facility", "25")
+	params.Add("facility", id)
 	errorCount := 0
 	defer func() {
-		ch <- prometheus.MustNewConstMetric(c.carParkErrors, prometheus.GaugeValue, float64(errorCount))
+		ch <- prometheus.MustNewConstMetric(c.carParkErrors, prometheus.GaugeValue, float64(errorCount), id)
 	}()
 
 	resp, err := c.client.Do(context.Background(), http.MethodGet, "/carpark", params, nil)
@@ -123,27 +127,36 @@ func (c *CarParkCollector) Collect(ch chan<- prometheus.Metric) {
 		errorCount++
 		return
 	}
-	ch <- prometheus.MustNewConstMetric(c.carParkInfo, prometheus.GaugeValue, 1, resp.FacilityID)
+
+	commonLabelValues := []string{id, resp.FacilityName, resp.Location.Suburb, resp.Location.Address}
+
+	ch <- prometheus.MustNewConstMetric(c.carParkInfo, prometheus.GaugeValue, 1, commonLabelValues...)
 
 	currentSpots, err := strconv.Atoi(resp.Occupancy.Total)
 	if err != nil {
 		errorCount += 1
 	}
 
-	ch <- prometheus.MustNewConstMetric(c.carParkCurrentSpots, prometheus.GaugeValue, float64(currentSpots), resp.FacilityID)
+	ch <- prometheus.MustNewConstMetric(c.carParkCurrentVehicleCount, prometheus.GaugeValue, float64(currentSpots), commonLabelValues...)
 
 	totalSpots, err := strconv.Atoi(resp.Spots)
 	if err != nil {
 		errorCount += 1
 	}
 
-	ch <- prometheus.MustNewConstMetric(c.carParkTotalSpots, prometheus.GaugeValue, float64(totalSpots), resp.FacilityID)
+	ch <- prometheus.MustNewConstMetric(c.carParkTotalSpots, prometheus.GaugeValue, float64(totalSpots), commonLabelValues...)
 
 	t, err := time.Parse("2006-01-02T15:04:05", resp.MessageDate)
 	if err != nil {
 		c.logger.Error("unable to parse time", "error", err)
 		errorCount += 1
 	} else {
-		ch <- prometheus.MustNewConstMetric(c.carParkLastUpdated, prometheus.GaugeValue, float64(t.Unix()), resp.FacilityID)
+		ch <- prometheus.MustNewConstMetric(c.carParkLastUpdated, prometheus.GaugeValue, float64(t.Unix()), commonLabelValues...)
+	}
+}
+
+func (c *CarParkCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, id := range c.cfg.FacilityIDs {
+		c.CollectFromID(ch, id)
 	}
 }

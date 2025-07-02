@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"transport-nsw-exporter/internal/config"
 	"transport-nsw-exporter/pkg/collectors"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -21,12 +22,14 @@ var ready atomic.Value
 type Server struct {
 	listenAddress string
 	logger        *slog.Logger
+	config        config.Config
 }
 
-func New(listenAddress string, logger *slog.Logger) *Server {
+func New(listenAddress string, logger *slog.Logger, config config.Config) *Server {
 	return &Server{
 		listenAddress: listenAddress,
 		logger:        logger,
+		config:        config,
 	}
 }
 
@@ -38,7 +41,7 @@ func (s *Server) Run() error {
 	mux.HandleFunc("/readyz", readyzHandler)
 	mux.Handle("/metrics", promhttp.Handler())
 
-	collectors.RegisterCollectors(s.logger)
+	collectors.RegisterCollectors(s.logger, s.config.Collectors)
 
 	server := &http.Server{
 		Addr:    s.listenAddress,
